@@ -1,0 +1,963 @@
+---
+title: "Time Series Analysis"
+author: "Yeh"
+date: "2019年6月7日"
+output: 
+  html_document: 
+     theme: united
+     toc : true
+     number_sections: true
+     toc_depth : 4
+     toc_float : 
+      collapsed : true
+      smooth_scroll : true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(TSA)
+library(forecast)
+library(tseries)
+
+
+# step 1:
+## please set working directory and file name
+setwd('/Users/yeyuting/Desktop/NCCU/時間數列分析/HW3/')
+rawdata = read.csv('機動車輛及道路交通事故分析.csv')
+
+
+# step 2:
+## choose some columns worth to be analysed.
+potential_columns = c("肇事總件數.件.", "A1類件數.件.", "A2類件數.件.")
+potential_data = as.data.frame(rawdata[,potential_columns])
+## Rename to English, Chinese words always exist some problems.
+colnames(potential_data) = c('Total', 'A1', 'A2')
+
+
+# step:3
+## target column, we will analysis this data
+## You can choose target column after checking output of EDA
+target_column = 'A2'
+target_data = potential_data[,target_column]
+
+# step 4:
+## How many data you would set to be predict for testing
+forecast_num = 14 ## from 2018/1 to 2019/2, total 14 months
+
+```
+
+
+# WorkFlow
+
+0. Exploratory Analysis:
+ a. ts-plot : overview whole data (trend or outliers)
+ b. box-plot by month : monthly effect
+
+1. De-Trend : 
+ a. Determinist Trend(linear model) 
+ b. Stochastic Trend (Difference)
+ 
+2. De-Seasonal : 
+ a. Determinist Seasonal(season as dummy variable) 
+ b. Stochastic seasonal(Difference with lag)
+ 
+3. Fit Model ARMA(p, q) to residuals
+
+4. Diagnose model(last residuals should be White Noise)
+
+5. Simulate prediction 
+
+
+
+
+# Exploratory Analysis
+
+## Overview Potential Data
+
+```{r}
+DT::datatable(potential_data)
+
+summary(potential_data)
+
+
+potential_data_ts = ts(potential_data,
+                       start = c(2000,1),
+                       freq = 12)
+plot(potential_data_ts, main = 'ts-plot')
+boxplot(potential_data_ts)
+
+```
+
+Due to extremely low numbers of A1 class and the similarity between Total and A2 class, let's focus on A2 class as our research target.
+
+## Target Data Summary
+
+```{r}
+
+target_data_ts = ts(target_data,start = c(2000,1),freq = 12)
+
+
+boxplot(target_data_ts ~cycle(target_data_ts ),
+        main = target_column , 
+        xlab = 'month',
+        ylab = target_column )
+
+```
+
+## Training Data
+```{r}
+len = length(target_data)
+data = target_data[1:(len-forecast_num)]
+data_ts = ts(data,start = c(2000,1),freq = 12)
+
+test = target_data[(len-forecast_num+1):len]
+test_ts = ts(test,end = c(2019,2),freq = 12)
+
+```
+
+
+# Determinist Method
+
+## Determinist-trend
+
+### Linear Model with intercept
+
+```{r}
+model_lm = lm(data_ts~time(data_ts))
+summary(model_lm)
+```
+
+
+```{r}
+plot(data_ts, main = 'Linear model with intercept');abline(reg = model_lm,col = 'red')
+
+```
+
+### Residual Analysis
+
+```{r}
+## original : for follow-up analysis
+res_lm = residuals(model_lm)
+plot(y=res_lm ,x=as.vector(time(data_ts)),
+xlab='Time',ylab='Residuals',type='o',
+main = 'Residuals : LM de-trend')
+
+## standard : observe outliers (some issues sor events)
+std_res_lm = ts(rstudent(model_lm),
+                start = c(2000,1),freq = 12)
+plot(y=std_res_lm ,x=as.vector(time(std_res_lm)),
+xlab='Time',ylab='Standardized Residuals',type='o',
+main = 'Satndard residuals : LM de-trend');abline(a = 3,b = 0, col = 'red', lty = 2);abline(a = -3,b = 0, col = 'red', lty = 2);abline(a = 2,b = 0, col = 'orange', lty = 2);abline(a = -2,b = 0, col = 'orange', lty = 2);abline(a = 0,b = 0, col = 'grey', lty = 2)
+
+```
+
+
+
+```{r}
+hist(std_res_lm ,
+     breaks = 30,
+     xlab='Standardized Residuals', 
+     main = 'Residuals Histogram')
+
+qqnorm(std_res_lm , main = 'QQ plot');qqline(std_res_lm , col = 'red')
+
+ks.test(std_res_lm ,"pnorm")
+
+acf(res_lm, main = 'ACF of Residuals', lag.max = 60)
+```
+
+After de-trend process, residuals are considered to be **normal distribution** , but **not independent** random variable. Therefore, it's clearly proper to treat the data as a time series.  
+
+
+
+### Linear Model w.o. intercept
+```{r}
+model_lm_woi = lm(data_ts~time(data_ts)-1)
+summary(model_lm_woi)
+
+plot(data_ts, main='Linear Model w.o. intercept');abline(reg = model_lm_woi, col = 'red')
+
+
+plot(data_ts, main='Linear Model w.o. intercept (start at (0,0))',
+     xlim = c(0,2018), ylim = c(0,26000));abline(reg = model_lm_woi, col = 'red')
+
+```
+
+According to the plot above, the linear *model without intercept may not proper* to fit this data due to the restriction of passing through origin coordinates.
+
+
+## Determinist-season
+
+Attention : We continue the seasonal analysis with residual data from de-trend process instead of original data.
+
+
+### Summary
+
+```{r}
+season_data = res_lm
+
+season_data_ts = ts(season_data,start = c(2000,1),freq = 12)
+
+plot(y=season_data_ts  ,x=as.vector(time(season_data_ts )),
+xlab='Time',ylab='Residuals',type='o',
+main = paste0('Residuals of ',target_column,' after de-trend'))
+
+boxplot(season_data_ts~cycle(season_data_ts),
+        main = paste0('Residual of ',
+                      target_column , 
+                      ' after de-trend'), 
+        xlab = 'month',
+        ylab = 'Residual')
+```
+
+It's obviously that the occurrence of motor vehicle accident in **February is lower than other months**. Since means of twelves months are not equal,the seasonal effect should'nt be ignored.
+
+
+
+
+
+### Seasonal Model w.o intercept
+
+```{r}
+mon=season(season_data_ts) 
+
+model_season = lm(season_data_ts~mon-1)
+
+summary(model_season)
+
+
+model_season_fit = ts(fitted(model_season),start = c(2000,1),freq = 12)
+
+plot(model_season_fit , 
+     main = 'Seasonal model w.o. intercept',
+     col = 'red',
+     ylim = c(min(season_data_ts),max(season_data_ts)));points(season_data_ts, col = 'black')
+
+
+## residual
+res_season = residuals(model_season)
+res_season_ts = ts(res_season, 
+                      start = c(2000,1),
+                      freq = 12)
+
+
+plot(y=res_season_ts ,x=as.vector(time(res_season_ts)),
+xlab='Time',ylab='Residuals',type='o',
+main = 'Residuals : de-trend & de-season')
+
+### standard residual
+std_res_season = rstudent(model_season)
+
+plot(y=std_res_season  ,x=as.vector(time(std_res_season)),
+xlab='Time',ylab='Standardized Residuals',type='o',
+main = 'Satndard Residuals : de-trend & de-season');abline(a = 3,b = 0, col = 'red', lty = 2);abline(a = -3,b = 0, col = 'red', lty = 2);abline(a = 2,b = 0, col = 'orange', lty = 2);abline(a = -2,b = 0, col = 'orange', lty = 2);abline(a = 0,b = 0, col = 'grey', lty = 2)
+
+hist(std_res_season ,
+     breaks = 30,
+     xlab='Standardized Residuals', 
+     main = 'Residuals Histogram')
+
+qqnorm(std_res_season , main = 'QQ plot');qqline(std_res_lm , col = 'red')
+
+ks.test(std_res_season ,"pnorm")
+
+```
+
+According to the report, **Jan, Feb, Apr and Dec are significant months** in seasonal model; On the other side ,the plot of fitted values showes that the seasonal model still doesn't fully explain the data.
+
+After de-trend and de-season process, now lets *check the acf and pacf and try to fit ARMA model*;
+By the way, interestingly, ks-test still doesn't reject the hypothesis of normal-distribution assumption.
+
+
+### Seasonal Model with intercept
+
+```{r}
+month_=season(season_data_ts) 
+
+model_season_wi=lm(season_data_ts~month_)
+
+summary(model_season_wi)
+
+
+model_season_wi_fit = ts(fitted(model_season_wi),start = c(2000,1),freq = 12)
+
+ts.plot(model_season_fit,model_season_wi_fit,col = c(2,4),lwd = c(2,2),lty = c(2,3), main = 'Seasonal Means Model',
+     ylim = c(min(season_data_ts),max(season_data_ts)));points(season_data_ts, col = 'black')
+
+```
+
+Otherwise, it excludes the January effect in *seasonal model with intercept*, but fitted values are totally the same with ones without intercept; for the sake, the following analysis output will not differ with each seasonal model result.
+
+
+### Alternative : Harnonic Function
+
+```{r}
+har =harmonic(season_data_ts, 6)
+
+model_har = lm(season_data_ts~har)
+
+summary(model_har)
+
+
+model_har_fit = ts(fitted(model_har),
+                   start = c(2000,1),freq = 12)
+
+ts.plot(season_data_ts, lty = c(1,3), col=c(1,4),
+        main = 'Harmonic(6)', 
+        ylim = c(min(model_har_fit,season_data_ts),
+                max(model_har_fit,season_data_ts)));points(season_data_ts);lines(model_har_fit,col="red")
+
+```
+
+
+
+
+## ARMA
+
+### ACF and PACF
+```{r}
+arma_data = res_season
+arma_data_ts = ts(arma_data,start = c(2000,1),freq = 12)
+
+plot(y=arma_data_ts  ,x=as.vector(time(arma_data_ts)),
+xlab='Time',ylab='Residuals',type='o',
+main = paste0('Residuals of ',
+              target_column ,
+              ' after de-trend and de-season'))
+
+
+
+acf(arma_data, lag = 60, main = 'ACF of Residuals after de-trend and de season')
+pacf(arma_data, lag = 60, main = 'PACF of Residuals after de-trend and de season')
+```
+
+The tail-off ACF plot with cuts-off PACF plot implies the AR(p) model. Because of cuts-off after lag 1 in PACF plot, we first give AR(1) or SARMA(1,0)(1,0)[6] a try.
+
+### AR(1)
+
+#### Model
+```{r}
+model_ar1 = Arima(arma_data_ts, order = c(1,0,0))
+summary(model_ar1)
+
+model_ar1_fit = fitted(model_ar1)
+
+ts.plot(arma_data_ts, model_ar1_fit,col = c(1,2),lwd = c(2,1),lty = c(2,1), main = 'AR(1) Model',
+     ylim = c(min(arma_data_ts),max(arma_data_ts)));points(arma_data_ts, col = 'black')
+
+```
+
+
+
+
+#### Residuals
+```{r}
+## residual
+res_ar1  = residuals(model_ar1) ## model_ar1$residuals
+res_ar1_ts = ts(res_ar1, start = c(2000,1), freq = 12)
+
+
+plot(y=res_ar1_ts ,x=as.vector(time(res_ar1_ts)),
+xlab='Time',ylab='Residuals',type='o',
+main = 'Residuals of AR(1) after de-trend & de-season')
+
+## standard residual
+## rstudent not work to Arima object, but I found rstandard's output not equal to rstudent with seasonal model
+
+std_res_ar1 = rstandard(model_ar1) 
+
+plot(y=std_res_ar1  ,x=as.vector(time(std_res_ar1)),
+xlab='Time',ylab='Standardized Residuals',type='o',
+main = 'Satndard Residuals of AR(1) after de-trend & de-season');abline(a = 3,b = 0, col = 'red', lty = 2);abline(a = -3,b = 0, col = 'red', lty = 2);abline(a = 2,b = 0, col = 'orange', lty = 2);abline(a = -2,b = 0, col = 'orange', lty = 2);abline(a = 0,b = 0, col = 'grey', lty = 2)
+
+
+hist(std_res_ar1 ,
+     breaks = 30,
+     xlab='Standardized Residuals', 
+     main = 'Residuals Histogram')
+
+qqnorm(std_res_ar1 , main = 'QQ plot');qqline(std_res_ar1 , col = 'red')
+
+ks.test(std_res_ar1 ,"pnorm")
+
+```
+
+#### White Noise Diagnose
+```{r}
+acf(as.vector(res_ar1), lag = 60, main = 'ACF : Residuals of AR(1)')
+
+pacf(as.vector(res_ar1), lag = 60, main = 'PACF : Residuals of AR(1)')
+```
+
+
+### SARIMA(1,0,0)(1,0,0)[6]
+
+#### Model
+```{r}
+model_ar1010 = Arima(arma_data_ts, 
+                  order = c(1,0,0),
+                  seasonal = list(order = c(1,0,0),
+                                  period = 6))
+summary(model_ar1010)
+
+model_ar1010_fit = fitted(model_ar1010)
+
+ts.plot(arma_data_ts, model_ar1010_fit,col = c(1,2),lwd = c(2,1),lty = c(2,1), main = 'SARIMA(1,0,0)(1,0,0)[6] Model',
+     ylim = c(min(arma_data_ts),max(arma_data_ts)));points(arma_data_ts, col = 'black')
+
+```
+
+#### Residuals
+```{r}
+## residual
+res_ar1010  = residuals(model_ar1010) ## model_ar1$residuals
+res_ar1010_ts = ts(res_ar1010, start = c(2000,1), freq = 12)
+
+
+plot(y=res_ar1010_ts ,x=as.vector(time(res_ar1010_ts)),
+xlab='Time',ylab='Residuals',type='o',
+main = 'Residuals of SARIMA(1,0,0)(1,0,0)[6]')
+
+## standard residual
+## rstudent not work to Arima object, but I found rstandard's output not equal to rstudent with seasonal model
+
+std_res_ar1010 = rstandard(model_ar1010) 
+
+plot(y=std_res_ar1010  ,x=as.vector(time(std_res_ar1010)),
+xlab='Time',ylab='Standardized Residuals',type='o',
+main = 'Satndard Residuals of SARIMA(1,0,0)(1,0,0)[6]');abline(a = 3,b = 0, col = 'red', lty = 2);abline(a = -3,b = 0, col = 'red', lty = 2);abline(a = 2,b = 0, col = 'orange', lty = 2);abline(a = -2,b = 0, col = 'orange', lty = 2);abline(a = 0,b = 0, col = 'grey', lty = 2)
+
+
+hist(std_res_ar1010 ,
+     breaks = 30,
+     xlab='Standardized Residuals', 
+     main = 'Residuals Histogram')
+
+qqnorm(std_res_ar1010 , main = 'QQ plot');qqline(std_res_ar1010 , col = 'red')
+
+ks.test(std_res_ar1010 ,"pnorm")
+
+```
+
+#### White Noise Diagnose
+```{r}
+acf(as.vector(res_ar1010), lag = 60, main = 'ACF : Residuals of SARIMA(1,0,0)(1,0,0)[6]')
+
+pacf(as.vector(res_ar1010), lag = 60, main = 'PACF : Residuals of SARIMA(1,0,0)(1,0,0)[6]')
+```
+
+
+
+### Potential parameters for ARMA(p,q)
+
+#### Method I : EACF
+```{r}
+eacf(arma_data)
+
+# eacf_info = eacf(arma_data)
+# eacf_sig = eacf_info$eacf
+# eacf_sig < 0.05
+
+
+
+```
+
+<img src = 'https://imgur.com/pURnTsc.png'></img>
+
+
+
+
+By EACF matrix, ARMA(1,1) is our candidate for modeling.
+
+#### Method II : auto.arima
+Attention: Because we early import deterministic trend and seasonal model; to prevent it from stochastic effect, we set zero to parameters d, D, max.P and max.Q.
+
+```{r}
+auto_arima = auto.arima(arma_data_ts,
+           d = 0, D = 0,
+           trace = T)
+auto_parameters = auto_arima$arma #(p,q,P,Q,s,d,D)
+```
+
+By auto.arima function in "forecast" package, the best model is SARIMA(1,0,1)(1,0,1)[12] with zero mean 
+
+
+
+So, we have three candidate:
+a. ARMA(1,1)
+b. SARMA(1,0,1)(1,0,1)[12]
+
+### Candidate ARMA(p,q)
+```{r}
+## ARMA(1,1)
+model_arma11 = Arima(arma_data_ts, order = c(1,0,1))
+model_arma11_fit = fitted(model_arma11)
+res_arma11 = residuals(model_arma11)
+std_res_arma11 = rstandard(model_arma11) 
+
+## auto arima
+auto_p = auto_parameters[1]
+auto_q = auto_parameters[2]
+auto_P = auto_parameters[3]
+auto_Q = auto_parameters[4]
+auto_s = auto_parameters[5]
+auto_d = auto_parameters[6]
+auto_D = auto_parameters[7]
+
+model_arma_auto = Arima(arma_data_ts, 
+                        order = c(auto_p,auto_d,auto_q),
+                        seasonal = list(
+                          order = c(auto_P,auto_D,auto_Q),
+                          period = auto_s)
+                        )
+model_arma_auto_fit = fitted(model_arma_auto)
+res_arma_auto = residuals(model_arma_auto)
+std_res_arma_auto = rstandard(model_arma_auto) 
+
+model_form = paste0("ARIMA(",
+                    auto_p,",",
+                    auto_d,",",
+                    auto_q,")(",
+                    auto_P,",",
+                    auto_D,",",
+                    auto_Q,")[",
+                    auto_s,"]")
+## plot
+ts.plot(arma_data_ts, 
+        model_arma11_fit,
+        model_arma_auto_fit,
+        col = c(1,2,4),
+        lwd = c(1,2,2),
+        lty = c(1,2,3), 
+        
+        main = paste0('ARMA(1,1) and  ',model_form,'Model'),
+        ylim = c(min(arma_data_ts),
+              max(arma_data_ts)))
+# ;points(
+#         arma_data_ts, col = 'black');legend(
+#         'top', 
+#         legend = c('data','arma11',
+#                    paste0(model_form)),
+#         col = c(1,2,4),lty = 1,cex = 0.5
+#                       )
+
+
+
+```
+
+
+## Diagnose
+
+### Outlier
+
+```{r}
+plot(y=std_res_arma11  ,
+     x=as.vector(time(std_res_arma11)),
+     xlab='Time',
+     ylab='Standardized Residuals',
+     type='o',
+     main = 'Satndard Residuals of ARMA(1,1) after de-trend & de-season');abline(a = 3,b = 0, 
+     col = 'red', lty = 2);abline(a = -3,b = 0, 
+     col = 'red', lty = 2);abline(a = 2,b = 0, 
+     col = 'orange', lty = 2);abline(a = -2,b = 0, 
+     col = 'orange', lty = 2);abline(a = 0,b = 0, 
+     col = 'grey', lty = 2)
+
+
+plot(y=std_res_arma_auto,
+     x=as.vector(time(std_res_arma_auto)),
+     ylim = c(-3.5, 3.5),
+     xlab='Time',
+     ylab='Standardized Residuals',
+     type='o',
+     main = paste0('Satndard Residuals of ARMA(',
+     auto_p,',',auto_q,
+     ') after de-trend & de-season'));abline(a = 3,b = 0, 
+     col = 'red', lty = 2);abline(a = -3,b = 0, 
+     col = 'red', lty = 2);abline(a = 2,b = 0, 
+     col = 'orange', lty = 2);abline(a = -2,b = 0, 
+     col = 'orange', lty = 2);abline(a = 0,b = 0, 
+     col = 'grey', lty = 2)
+```
+
+
+### White Noise
+
+```{r}
+acf(as.vector(res_arma11), lag = 60, main = 'ACF : Residuals of ARMA(1,1)')
+pacf(as.vector(res_arma11), lag = 60, main = 'PACF : Residuals of ARMA(1,1)')
+
+
+acf(as.vector(res_arma_auto), lag = 60, 
+    main = paste0('ACF : Residuals of ARMA(',auto_p,',',auto_q,')'))
+pacf(as.vector(res_arma_auto), lag = 60, 
+     main = paste0('PACF : Residuals of ARMA(',auto_p,',',auto_q,')'))
+
+
+```
+
+Consider that the residuals had better be whote noise, 
+neither ARMA(1,1) nor ARMA(5,2) meets the ideal result because of the peaks with lag 12 on ACF plots, which means it's definitely not independent white noise.Therefore, lets give stochastic method a try.
+
+
+
+
+# Stochastic Method
+
+## Stochastic-Trend 
+
+### Dickey Fuller Test
+
+H0: non-stationary with lag k 
+H1: stationary with lag k
+
+
+```{r}
+## stationary
+adf.test(data_ts, alternative = c("stationary"),k = 1)
+adf.test(data_ts, alternative = c("stationary"),k = 2)
+adf.test(data_ts, alternative = c("stationary"),k = 3)
+## non stationary
+adf.test(data_ts, alternative = c("stationary"),k = 4)
+adf.test(data_ts, alternative = c("stationary"),k = 5)
+adf.test(data_ts, alternative = c("stationary"),k = 6)
+adf.test(data_ts, alternative = c("stationary"),k = 12)
+
+```
+
+Althogh the above shows outputs of adf.test, I don't really need it and won't interpret the test.
+
+
+### ACF before difference
+```{r}
+acf(data_ts, lag = 60)
+pacf(data_ts, lag = 60)
+```
+The tail-off acf, nearly equal to 1.0 starting at lag 1, strongly implies the stochastic trend effect. So I try to import non-seasonal part of the arima model, which means lets take difference with lag 1.
+
+
+### Difference
+```{r}
+## method I : arima model with d = 1
+model_stoch_trend = Arima(data_ts, order = c(0,1,0))
+model_stoch_trend_fit = fitted(model_stoch_trend)
+
+ts.plot(data_ts,model_stoch_trend_fit ,
+        col = c(1,2),lwd = c(1,2),lty = c(1,2), 
+        main = 'Stochastic Trend Model',
+     ylim = c(min(data_ts),max(data_ts)))
+
+res_stoch_trend = residuals(model_stoch_trend)
+
+## method II : diff 
+diff(data_ts)==residuals(model_stoch_trend)
+
+```
+
+### ACF after difference
+```{r}
+acf(as.vector(res_stoch_trend), lag = 60)
+pacf(as.vector(res_stoch_trend), lag = 60)
+```
+
+Compare determinist linear model to stochastic trend model, I think it's better to choose the latter one because I noticed that acf after difference shows repeatedly high auto-correlation with lag 12. It may help me more to interpret the further stochastic seasonal model.
+
+
+## Stochastic-Season
+
+```{r}
+stoch_season_data = res_stoch_trend
+## method I : arima model with D=1 and period=12
+model_stoch_season = Arima(stoch_season_data,
+        seasonal = list(order = c(0,1,0), period = 12))
+
+model_stoch_season_fit = fitted(model_stoch_season)
+
+ts.plot(stoch_season_data,
+        model_stoch_season_fit ,
+        col = c(1,2),lwd = c(1,1),lty = c(1,2), 
+        main = 'Stochastic Season Model',
+        ylim = c(min(stoch_season_data),
+              max(stoch_season_data)))
+
+res_stoch_season = residuals(model_stoch_season)
+
+## method 2 : diff with lag 12
+diff(stoch_season_data,lag = 12)==residuals(model_stoch_season)
+
+
+```
+
+
+## ARMA
+
+### ACF and PACF
+```{r}
+## if you dont import stochastic season effect
+# stoch_arma_data = res_stoch_trend 
+
+stoch_arma_data = res_stoch_season
+plot(y=stoch_arma_data ,
+     x=as.vector(time(stoch_arma_data)),
+     xlab='Time',ylab='Residuals',type='o',
+main = 'Residuals after de-trend and de-season')
+
+
+
+acf(as.vector(stoch_arma_data), lag = 60, 
+    main = 'ACF of Residuals after de-trend and de season')
+pacf(as.vector(stoch_arma_data), lag = 60, 
+     main = 'PACF of Residuals after de-trend and de season')
+```
+
+With low and irregular acf and pacf, it too hard for me to determine ARMA parameters p and q by  my poor experience.
+
+### Potential parameters for ARMA(p,q)
+
+#### Method I : EACF
+
+It can only partially explain non-seasonal parameters p,q
+```{r}
+eacf(stoch_arma_data)
+```
+
+ARMA(0,1) may be a proper choice
+
+## Method II: auto.arima
+```{r}
+auto_arima = auto.arima(stoch_arma_data,
+           d = 0, D = 0,
+           trace = T)
+
+auto_parameters = auto_arima$arma #(p,q,P,Q,s,d,D)
+auto_p = auto_parameters[1]
+auto_q = auto_parameters[2]
+auto_P = auto_parameters[3]
+auto_Q = auto_parameters[4]
+auto_s = auto_parameters[5]
+auto_d = auto_parameters[6]
+auto_D = auto_parameters[7]
+```
+
+According to the auto.arima, the best model is SARIMA(p=0,d=0,q=1)(P=0,D=0,Q=1) with lag 12 and without drift.
+
+### Candidate SARIMA(p,d,q)(P,D,Q)[s]
+```{r}
+
+model_stoch_arma_auto = Arima(stoch_arma_data, 
+                        order = c(auto_p,auto_d,auto_q),
+                        seasonal = list(
+                          order = c(auto_P,auto_D,auto_Q),
+                          period = auto_s)
+                        )
+model_stoch_arma_auto_fit = (stoch_arma_data - model_stoch_arma_auto$residuals)
+#model_stoch_arma_auto_fit == fitted(model_stoch_arma_auto)
+
+
+res_stoch_arma_auto = residuals(model_stoch_arma_auto)
+std_res_stoch_arma_auto = rstandard(model_stoch_arma_auto) 
+
+# res_stoch_arma_auto  == model_stoch_arma_auto$residuals
+
+ts.plot(stoch_arma_data,
+        model_stoch_arma_auto_fit ,
+        col = c(1,2),lwd = c(1,1),lty = c(1,2), 
+        main = 'SARMA Model',
+        ylim = c(min(stoch_arma_data),
+              max(stoch_arma_data)))
+
+
+
+
+```
+
+
+## Diagnose 
+
+### Outlier
+
+```{r}
+# plot(res_stoch_arma_auto) ## just check
+plot(y=std_res_stoch_arma_auto,
+     x=as.vector(time(std_res_stoch_arma_auto)),
+     xlab='Time',
+     ylab='Standardized Residuals',
+     type='o',
+     main = 'Satndard Residuals of ARMA after de-trend & de-season');abline(a = 3,b = 0, 
+     col = 'red', lty = 2);abline(a = -3,b = 0, 
+     col = 'red', lty = 2);abline(a = 2,b = 0, 
+     col = 'orange', lty = 2);abline(a = -2,b = 0, 
+     col = 'orange', lty = 2);abline(a = 0,b = 0, 
+     col = 'grey', lty = 2)
+
+```
+
+
+### White Noise
+
+```{r}
+acf(as.vector(res_stoch_arma_auto), 
+    lag = 60, main = 'ACF : Residuals of SARMA')
+pacf(as.vector(res_stoch_arma_auto), 
+     lag = 60, main = 'PACF : Residuals of SARMA')
+```
+
+
+Before prediction, let's summarise the model info.
+Firstly, we apply linear model or difference into the de-trend process; secondly, we apply seasonal model or difference with a lag into the de-season process.After trend and seasonal effects are removed, we established an ARMA or a Seasonal ARMA model to fit the data and expect that the residuals could be white noise.
+
+Therefore, the whole fitting model of **Determinist Method** would contain three parts : ARMA, Seasonal Model, Trend Model
+$$ (1-\Sigma_{i}^{p}{\phi_i B_i})Y_t = (1-\Sigma_{j}^{q}{\theta_j B^j})e_t + (\Sigma{\gamma_k m_k}) + (\beta_1 t  + \beta_0)$$
+$$ B : lag \space operator  $$
+$$p,q : non-seasonal \space ARMA \space parameter$$
+
+$$m_i : dummy \space variable \space of \space seasonal\space effect$$
+
+$$\gamma : coefficient \space of \space season\space effect$$
+
+$$\beta : coefficient \space of \space trend\space effect$$
+
+The Whole **Stochastic Model** would be like:
+$$ (1-B)^d(1-B^s)^D(1-\Sigma_{i}^{p}{\phi_i B^i})(1-\Sigma_{j}^{P}{\Phi_j B^{js}})Y_t = (1-\Sigma_{k}^{q}{\theta_k B^k})(1-\Sigma_{l}^{Q}{\theta_l B^{ls}})e_t $$
+
+$$ B : lag \space operator  $$
+$$p,d,q : nonseasonal \space ARMA \space parameter$$
+$$P,D,Q,s : seasonal \space ARMA \space parameter$$
+
+
+### Simplify Whole Stochastic Model
+
+The whole stochastic model go through once difference for de-trend, once defference with lag 12 for de-season,and fitting a seasonal ARMA(0,0,1)(0,0,1)[12] model.Now we can simplify the whole model as a SARIMA(0,1,1)(0,1,1)[12]
+
+#### Stochastic Method
+```{r}
+model_sarima = Arima(y = data_ts,
+        order = c(0,1,1),
+        seasonal = list(order = c(0,1,1), 
+                        period = 12))
+
+model_sarima_fit = (data_ts - model_sarima$residuals)
+res_sarima =  model_sarima$residuals
+
+## I don't know why the residual not the same
+res_sarima == res_stoch_arma_auto
+res_sarima - res_stoch_arma_auto
+
+## But the acf and pacf pattern are nearly equal
+par(mfrow = c(2,2));acf(as.vector(res_sarima), 
+    lag = 60, main = 'ACF : Residuals of SARIMA');pacf(as.vector(res_sarima), 
+     lag = 60, main = 'PACF : Residuals of SARIMA');acf(as.vector(res_stoch_arma_auto), 
+    lag = 60, main = 'ACF : Residuals of whole split models previously');pacf(as.vector(res_stoch_arma_auto), 
+     lag = 60, main = 'PACF : Residuals of whole split models previously')
+```
+
+
+#### Determinist Method
+
+```{r}
+dummy =  seasonaldummy(ts(data_ts,f=12))
+var_time = time(data_ts)
+xreg = model.matrix(~dummy + var_time)
+
+model_det_arima = Arima(y = data_ts,
+                     xreg = xreg ,
+                     include.mean=FALSE ,
+                     order = c(1,0,1),
+                     seasonal=list(order=c(1,0,1), period=12)
+                    )
+
+model_det_arima_fit = (data_ts - model_det_arima $residuals)
+res_det_arima  =  model_det_arima$residuals
+
+```
+
+
+#### Mix Method I
+
+<font size = 4> 
+Determinist de-trend + Stochastic de-season + SARIMA
+</font>
+
+```{r}
+xreg = time(data_ts)
+
+model_mix_arima = Arima(y = data_ts,
+                     xreg = xreg,
+                     order = c(1,0,1),
+                     seasonal=list(order=c(1,1,1), period=12)
+                    )
+
+model_mix_arima_fit = (data_ts - model_mix_arima$residuals)
+res_mix_arima  =  model_mix_arima$residuals
+```
+
+
+#### Mix Method II
+
+<font size = 4> 
+Stochastic de-trend +  Determinist de-season + SARIMA
+I met some Non-Stationary Problems
+</font>
+
+```{r}
+# dummy =  seasonaldummy(ts(data_ts,f=12))
+# xreg = model.matrix(~dummy)
+# 
+# model_mix_arima = Arima(y =data_ts,
+#                      xreg = xreg,
+#                      order = c(1,0,1),
+#                      include.mean=FALSE ,
+#                      seasonal=list(order=c(1,0,1), 
+#                                    period=12)
+#                     )
+# 
+# model_mix_arima_fit = (data_ts - model_mix_arima$residuals)
+# res_mix_arima  =  model_mix_arima$residuals
+```
+
+
+
+
+# Prediction
+
+## Stochastic
+```{r}
+pred_sarima = forecast(model_sarima, h = forecast_num)
+
+plot(pred_sarima);lines(pred_sarima$fitted,col="red");lines(target_data_ts,col="black")
+
+
+```
+
+## Determinist
+```{r}
+test_dummy =  seasonaldummy(ts(test_ts,f=12))
+test_var_time = time(test_ts)
+test_xreg = model.matrix(~test_dummy + test_var_time)
+
+pred_det_arima = forecast(model_det_arima, 
+                          h = forecast_num,
+                          xreg = test_xreg)
+
+plot(pred_det_arima);lines(pred_det_arima$fitted,col="red");lines(target_data_ts,col="black")
+```
+
+
+## Mix Model 
+```{r}
+test_xreg = time(test_ts)
+
+pred_mix_arima = forecast(model_mix_arima, 
+                          h = forecast_num,
+                          xreg = test_xreg)
+
+plot(pred_mix_arima);lines(pred_mix_arima$fitted,col="red");lines(target_data_ts,col="black")
+```
+
+
+
+
+<font size = 5> Thanks for reading !</font>
+
+
