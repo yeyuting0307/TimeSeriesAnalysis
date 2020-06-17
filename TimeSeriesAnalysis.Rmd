@@ -925,6 +925,7 @@ I met some Non-Stationary Problems
 ```{r}
 pred_sarima = forecast(model_sarima, h = forecast_num)
 
+
 plot(pred_sarima);lines(pred_sarima$fitted,col="red");lines(target_data_ts,col="black")
 
 
@@ -941,6 +942,7 @@ pred_det_arima = forecast(model_det_arima,
                           xreg = test_xreg)
 
 plot(pred_det_arima);lines(pred_det_arima$fitted,col="red");lines(target_data_ts,col="black")
+
 ```
 
 
@@ -952,7 +954,8 @@ pred_mix_arima = forecast(model_mix_arima,
                           h = forecast_num,
                           xreg = test_xreg)
 
-plot(pred_mix_arima);lines(pred_mix_arima$fitted,col="red");lines(target_data_ts,col="black")
+
+par(bg="#DDDDDDFF");plot(pred_mix_arima, main = 'ARIMA(1,0,1)(1,1,1)[12]' );lines(target_data_ts,col="black");rect(0, 0, 2001, 31000,col = "#f285a233");rect(2001, 0, 2018, 31000,col = "#f2d58533", );rect(2018, 0, 2020, 31000,col = "#85def233", );lines(pred_mix_arima$fitted,col="red");
 ```
 
 
